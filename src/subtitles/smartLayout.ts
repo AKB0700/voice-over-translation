@@ -1,137 +1,132 @@
-/**
- * Smart subtitle layout helpers.
- *
- */
-
-export type AnchorBoxLayout = {
+export type SmartLayoutBox = {
   w: number;
   h: number;
 };
 
-export type SmartLayout = {
+export type SmartCssMetrics = {
   fontSizePx: number;
   maxWidthPx: number;
-  maxLength: number;
 };
 
-// Heuristics/constants used by the smart-layout computation.
-//
-// Note: character width varies by font and language. We keep this as a
-// conservative average for proportional sans fonts.
-const EST_CHAR_WIDTH_RATIO = 0.55;
+export type SmartLayoutResult = {
+  fontSizePx: number;
+  maxWidthPx: number | null;
+};
 
-function clamp(value: number, min: number, max: number): number {
-  if (Number.isNaN(value)) return min;
-  return Math.min(max, Math.max(min, value));
-}
+const clampNumber = (value: number, min: number, max: number): number =>
+  Math.min(max, Math.max(min, value));
 
-function targetCharsPerLine(aspect: number): number {
-  // Common caption/subtitle guidance uses ~32 chars/line for 4:3 and ~42 for
-  // widescreen. Portrait layouts need shorter lines to avoid tall blocks.
-  if (aspect < 1) return 28;
-  if (aspect < 1.4) return 32;
-  return 42;
-}
+const roundToInt = (value: number): number => Math.round(value);
 
-/**
- * Caption width budget ("title safe"-like) expressed as a fraction of the
- * video width.
- *
- * This is a *ceiling* — the actual caption width is still derived from the
- * target characters-per-line and computed font size.
- */
-function computeGuidelineMaxWidthRatio(aspect: number): number {
-  // Caption line-length guidance commonly referenced by accessibility checklists
-  // (e.g. BBC-style rules) is often expressed as a percentage of video width.
-  //
-  // We apply:
-  // - ~16:9 and wider: ~68%
-  // - ~4:3 and moderate: ~90%
-  // - portrait/square: slightly wider to reduce over-wrapping while still
-  //   avoiding edge-to-edge captions.
-  if (!Number.isFinite(aspect) || aspect <= 0) return 0.9;
+const resolveAspectBand = (
+  aspect: number,
+): {
+  widthRatio: number;
+  charsPerLine: number;
+  fontHeightRatio: number;
+} => {
+  if (aspect < 0.8) {
+    return {
+      widthRatio: 0.9,
+      charsPerLine: 27,
+      fontHeightRatio: 0.03,
+    };
+  }
 
-  if (aspect >= 1.4) return 0.68;
-  if (aspect >= 1.2) return 0.9;
-  return 0.92;
-}
+  if (aspect < 1.1) {
+    return {
+      widthRatio: 0.84,
+      charsPerLine: 31,
+      fontHeightRatio: 0.031,
+    };
+  }
 
-/**
- * Compute a smart font size in CSS pixels.
- */
-function computeSmartFontSizePx(anchorBox: AnchorBoxLayout): number {
-  const w = Math.max(1, anchorBox.w);
-  const h = Math.max(1, anchorBox.h);
-  const aspect = w / h;
+  if (aspect < 1.5) {
+    return {
+      widthRatio: 0.76,
+      charsPerLine: 36,
+      fontHeightRatio: 0.033,
+    };
+  }
 
-  const guidelineMaxWidthRatio = computeGuidelineMaxWidthRatio(aspect);
-  const guidelineMaxWidthPx = w * guidelineMaxWidthRatio;
+  if (aspect < 1.95) {
+    return {
+      widthRatio: 0.72,
+      charsPerLine: 40,
+      fontHeightRatio: 0.034,
+    };
+  }
 
-  const targetCPL = targetCharsPerLine(aspect);
+  return {
+    widthRatio: 0.68,
+    charsPerLine: 44,
+    fontHeightRatio: 0.035,
+  };
+};
 
-  // Baseline sizing: 36px at 1080p (landscape).
-  // Scale with height (relative sizing) and flatten growth above 1080p so
-  // 4K/5K doesn't become comically large.
-  const targetPxAt1080 = 36;
-  const baseFontRatioLandscape = targetPxAt1080 / 1080;
+const resolveWidthBoost = (
+  width: number,
+): {
+  extraChars: number;
+  widthScale: number;
+} => {
+  if (width >= 1920) {
+    return { extraChars: 4, widthScale: 1.04 };
+  }
 
-  const portraitScale = 0.89;
-  const baseFontRatio =
-    aspect < 1
-      ? baseFontRatioLandscape * portraitScale
-      : baseFontRatioLandscape;
+  if (width >= 1440) {
+    return { extraChars: 3, widthScale: 1.03 };
+  }
 
-  // Keep in the same ballpark as the manual font-size slider.
-  const minFontPx = 18;
-  const maxFontPx = 50;
+  if (width >= 960) {
+    return { extraChars: 2, widthScale: 1.02 };
+  }
 
-  const pivotH = 1080;
-  const pivotFont = pivotH * baseFontRatio;
-  const flattenExponent = 0.35;
+  if (width >= 640) {
+    return { extraChars: 1, widthScale: 1.01 };
+  }
 
-  const heightBasedPx =
-    h <= pivotH
-      ? h * baseFontRatio
-      : pivotFont * (h / pivotH) ** flattenExponent;
+  return { extraChars: 0, widthScale: 1 };
+};
 
-  // Width guardrail: ensure the *target* characters-per-line can fit inside the
-  // width budget (roughly proportional to font size via EST_CHAR_WIDTH_RATIO).
-  const maxByWidthPx = guidelineMaxWidthPx / (targetCPL * EST_CHAR_WIDTH_RATIO);
-
-  const fontSizePx = Math.round(Math.min(heightBasedPx, maxByWidthPx));
-  return clamp(fontSizePx, minFontPx, maxFontPx);
-}
+const estimateAverageGlyphWidth = (fontSizePx: number): number =>
+  Math.max(7, fontSizePx * 0.56);
 
 export function computeSmartLayoutForBox(
-  anchorBox: AnchorBoxLayout,
-): SmartLayout {
-  const w = Math.max(1, anchorBox.w);
-  const h = Math.max(1, anchorBox.h);
-  const aspect = w / h;
+  box: SmartLayoutBox,
+  cssMetrics: SmartCssMetrics | null = null,
+): SmartLayoutResult {
+  const width = Number.isFinite(box.w) ? Math.max(0, box.w) : 0;
+  const height = Number.isFinite(box.h) ? Math.max(0, box.h) : 0;
 
-  const fontSizePx = computeSmartFontSizePx(anchorBox);
+  if (width <= 0 || height <= 0) {
+    return {
+      fontSizePx: cssMetrics?.fontSizePx ?? 20,
+      maxWidthPx: cssMetrics?.maxWidthPx ?? null,
+    };
+  }
 
-  const guidelineMaxWidthRatio = computeGuidelineMaxWidthRatio(aspect);
-  const guidelineMaxWidthPx = w * guidelineMaxWidthRatio;
+  const aspect = width / height;
+  const { widthRatio, charsPerLine, fontHeightRatio } =
+    resolveAspectBand(aspect);
+  const { extraChars, widthScale } = resolveWidthBoost(width);
 
-  const targetCPL = targetCharsPerLine(aspect);
+  const derivedFontSizePx = clampNumber(height * fontHeightRatio, 16, 42);
+  const fontSizePx = cssMetrics?.fontSizePx ?? derivedFontSizePx;
+  const averageGlyphWidth = estimateAverageGlyphWidth(fontSizePx);
 
-  // Approximate average character width as a fraction of font size.
-  const estCharW = fontSizePx * EST_CHAR_WIDTH_RATIO;
-  const targetMaxWidth = targetCPL * estCharW;
-
-  // Minimum width keeps captions from becoming too narrow (causing tall blocks).
-  const minWidthPx = w * (aspect < 1 ? 0.8 : 0.55);
-
-  const maxWidthPx = clamp(targetMaxWidth, minWidthPx, guidelineMaxWidthPx);
-  const computedCPL = maxWidthPx / estCharW;
-
-  // Set maxLength for the time-based segmentation feature. Bound reasonably.
-  const maxLength = clamp(Math.round(computedCPL * 2), 50, 180);
+  const minWidthPx = width * Math.min(0.92, widthRatio);
+  const maxWidthPx = width * clampNumber(widthRatio * widthScale, 0.66, 0.92);
+  const preferredCharsPerLine = clampNumber(charsPerLine + extraChars, 25, 48);
+  const widthFromChars = preferredCharsPerLine * averageGlyphWidth;
+  const resolvedMaxWidthPx = clampNumber(
+    widthFromChars,
+    minWidthPx,
+    maxWidthPx,
+  );
 
   return {
     fontSizePx,
-    maxWidthPx,
-    maxLength,
+    maxWidthPx: roundToInt(resolvedMaxWidthPx),
   };
 }

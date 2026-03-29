@@ -241,5 +241,8 @@
   "VOTLoginViaToken": "Identifikohuni përmes token",
   "subtitlesSmartLayout": "Paraqitja e zgjuar e titrave",
   "smartDucking": "Vëllimi adaptiv",
-  "VOTAutoSubtitles": "Titra në open"
+  "VOTAutoSubtitles": "Titra në open",
+  "VOTSubtitlesFont": "Shkronja e titrave",
+  "VOTDefaultSubtitlesLanguage": "Gjuha e parazgjedhur e titrave",
+  "VOTOriginalVideoLanguage": "Gjuha origjinale e videos"
 }

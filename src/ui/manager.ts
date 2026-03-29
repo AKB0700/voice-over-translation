@@ -1,5 +1,3 @@
-import type { SubtitlesData } from "@vot.js/shared/types/subs";
-import { convertSubs } from "@vot.js/shared/utils/subs";
 import type { VideoHandler } from "..";
 import {
   actualCompatVersion,
@@ -7,12 +5,13 @@ import {
   repositoryUrl,
 } from "../config/config";
 import { localizationProvider } from "../localization/localizationProvider";
-import type { ProcessedSubtitles } from "../subtitles/types";
+import { serializeProcessedSubtitles } from "../subtitles/standards";
 import type { Status } from "../types/components/votButton";
 import type { StorageData } from "../types/storage";
 import type { OverlayMount, UIManagerProps } from "../types/uiManager";
 import ui from "../ui";
 import debug from "../utils/debug";
+import { resolveScopedFullscreenElement } from "../utils/dom";
 import { downloadTranslation } from "../utils/download";
 import { GM_fetch } from "../utils/gm";
 import type { IntervalIdleChecker } from "../utils/intervalIdleChecker";
@@ -22,33 +21,11 @@ import {
   clearFileName,
   type DownloadBlobOptions,
   downloadBlob,
-  exitFullscreen,
 } from "../utils/utils";
-import VOTLocalizedError from "../utils/VOTLocalizedError";
-import VOTButton from "./components/votButton";
+import { applyOverlayMountUpdate } from "./mount";
+import { handleTranslationButtonCommand } from "./translationCommands";
 import { OverlayView } from "./views/overlay";
 import { SettingsView } from "./views/settings";
-
-const mapProcessedSubtitlesToSharedData = (
-  data: ProcessedSubtitles,
-): SubtitlesData => {
-  const subtitles = data.subtitles.map((line) => ({
-    text: line.text,
-    startMs: line.startMs,
-    durationMs: line.durationMs,
-    speakerId: line.speakerId,
-    tokens: line.tokens.map((token) => ({
-      text: token.text,
-      startMs: token.startMs,
-      durationMs: token.durationMs,
-    })),
-  }));
-
-  return {
-    containsTokens: subtitles.some((line) => line.tokens.length > 0),
-    subtitles,
-  };
-};
 
 export class UIManager {
   mount: OverlayMount;
@@ -108,7 +85,7 @@ export class UIManager {
     this.initialized = true;
 
     this.votGlobalPortal = ui.createPortal();
-    document.documentElement.appendChild(this.votGlobalPortal);
+    this.getGlobalPortalHost(this.mount).appendChild(this.votGlobalPortal);
 
     this.votOverlayView = new OverlayView({
       mount: this.mount,
@@ -132,10 +109,34 @@ export class UIManager {
   }
 
   updateMount(mount: OverlayMount) {
-    this.mount = mount;
-    this.votOverlayView?.updateMount?.(mount);
+    const globalPortalHost = this.getGlobalPortalHost(mount);
+    if (this.votGlobalPortal?.parentElement !== globalPortalHost) {
+      globalPortalHost.appendChild(this.votGlobalPortal);
+    }
+
+    this.mount = applyOverlayMountUpdate(this.mount, mount, (nextMount) => {
+      this.votOverlayView?.updateMount(nextMount);
+    });
+
+    this.videoHandler?.subtitlesWidget?.updateMount({
+      container: mount.subtitlesMountContainer,
+      tooltipLayoutRoot: mount.tooltipLayoutRoot,
+    });
 
     return this;
+  }
+
+  private getGlobalPortalHost(mount: OverlayMount): HTMLElement {
+    const doc = document as Document & {
+      webkitFullscreenElement?: Element | null;
+    };
+    const fullscreenEl = doc.fullscreenElement ?? doc.webkitFullscreenElement;
+    const isCurrentVideoFullscreen = Boolean(
+      resolveScopedFullscreenElement(fullscreenEl, [mount.root], {
+        allowDocumentViewport: true,
+      }),
+    );
+    return isCurrentVideoFullscreen ? mount.root : document.documentElement;
   }
 
   initUIEvents() {
@@ -180,7 +181,6 @@ export class UIManager {
         this.videoHandler?.overlayVisibility?.cancel();
         this.videoHandler?.overlayVisibility?.show();
         this.votSettingsView.open();
-        await exitFullscreen();
       })
       .addEventListener("click:downloadTranslation", async () => {
         await this.handleDownloadTranslationClick();
@@ -193,7 +193,9 @@ export class UIManager {
           return;
         }
 
-        this.videoHandler.setVideoVolume(volume / 100);
+        const nextVolume01 = volume / 100;
+        this.videoHandler.setVideoVolume(nextVolume01);
+        this.videoHandler.applyManualVideoVolumeOverride(nextVolume01);
         if (!this.data.syncVolume) {
           this.videoHandler.onVideoVolumeSliderSynced(volume);
           return;
@@ -255,6 +257,16 @@ export class UIManager {
 
         await this.videoHandler.enableSubtitlesForCurrentLangPair();
       })
+      .addEventListener("select:responseLanguageSubtitles", async () => {
+        if (
+          !this.videoHandler?.data.autoSubtitles ||
+          !this.videoHandler.videoData
+        ) {
+          return;
+        }
+
+        await this.videoHandler.enableSubtitlesForCurrentLangPair();
+      })
       .addEventListener("change:showVideoVolume", () => {
         this.withInitializedOverlayView((overlayView) => {
           if (!overlayView.videoVolumeSlider || !overlayView.votButton) {
@@ -273,7 +285,10 @@ export class UIManager {
           }
 
           const currentVolume = overlayView.translationVolumeSlider.value;
-          const maxVolume = this.data.audioBooster ? maxAudioVolume : 100;
+          const maxVolume =
+            this.data.audioBooster && !this.data.syncVolume
+              ? maxAudioVolume
+              : 100;
           overlayView.translationVolumeSlider.max = maxVolume;
           const nextVolume = clamp(currentVolume, 0, maxVolume);
           overlayView.translationVolumeSlider.value = nextVolume;
@@ -285,9 +300,6 @@ export class UIManager {
           return;
         }
         this.videoHandler.setupAudioSettings();
-        if (!checked) {
-          return;
-        }
 
         this.withInitializedOverlayView((overlayView) => {
           const videoSlider = overlayView.videoVolumeSlider;
@@ -296,9 +308,20 @@ export class UIManager {
             return;
           }
 
+          const maxVolume =
+            this.data.audioBooster && !checked ? maxAudioVolume : 100;
+          translationSlider.max = maxVolume;
+          const nextTranslation = clamp(translationSlider.value, 0, maxVolume);
+          translationSlider.value = nextTranslation;
+          this.videoHandler.onTranslationVolumeSliderSynced(nextTranslation);
+
+          if (!checked) {
+            return;
+          }
+
           this.videoHandler.resetVolumeLinkState(
             Number(videoSlider.value),
-            Number(translationSlider.value),
+            nextTranslation,
           );
         });
       })
@@ -345,6 +368,15 @@ export class UIManager {
           this.data.subtitlesFontSize,
           (widget, nextValue) => {
             widget.setFontSize(nextValue);
+          },
+        );
+      })
+      .addEventListener("select:subtitlesFontFamily", (item) => {
+        this.updateSubtitlesWidgetSetting(
+          item,
+          this.data.subtitlesFontFamily,
+          (widget, nextValue) => {
+            widget.setFontFamily(nextValue);
           },
         );
       })
@@ -407,11 +439,10 @@ export class UIManager {
       })
       .addEventListener("select:buttonPosition", (item) => {
         this.withInitializedOverlayView((overlayView) => {
-          const newPosition = this.data.buttonPos ?? item;
-          overlayView.updateButtonLayout(
-            newPosition,
-            VOTButton.calcDirection(newPosition),
-          );
+          const preferredPosition = this.data.buttonPos ?? item;
+          const { position, direction } =
+            overlayView.calcButtonLayout(preferredPosition);
+          overlayView.updateButtonLayout(position, direction);
         });
       })
       .addEventListener("select:menuLanguage", async () => {
@@ -505,9 +536,15 @@ export class UIManager {
     }
 
     const subsFormat = this.data.subtitlesDownloadFormat ?? "json";
-    const subsContent = convertSubs(
-      mapProcessedSubtitlesToSharedData(videoHandler.yandexSubtitles),
+    const subsContent = serializeProcessedSubtitles(
+      videoHandler.yandexSubtitles,
       subsFormat,
+      {
+        assTitle:
+          videoHandler.videoData.localizedTitle ??
+          videoHandler.videoData.title ??
+          videoHandler.videoData.downloadTitle,
+      },
     );
     const blob = new Blob(
       [
@@ -584,7 +621,6 @@ export class UIManager {
     await this.videoHandler.updateSubtitlesLangSelect();
     const widget = this.videoHandler.subtitlesWidget;
     if (widget) {
-      widget.setPortal(this.votOverlayView.votOverlayPortal);
       widget.resetTranslationContext(true);
     }
 
@@ -596,101 +632,15 @@ export class UIManager {
       throw new Error("[VOT] OverlayView isn't initialized");
     }
 
-    const videoHandler = this.videoHandler;
-    if (!videoHandler) {
-      return this;
-    }
-
-    debug.log("[handleTranslationBtnClick] click translationBtn");
-    if (videoHandler.hasActiveSource()) {
-      debug.log("[handleTranslationBtnClick] video has active source");
-      await videoHandler.stopTranslation();
-      return this;
-    }
-
-    if (
-      this.votOverlayView.votButton.status === "error" &&
-      !this.votOverlayView.votButton.loading
-    ) {
-      this.transformBtn("none", localizationProvider.get("translateVideo"));
-    }
-
-    if (
-      this.votOverlayView.votButton.status !== "none" ||
-      this.votOverlayView.votButton.loading
-    ) {
-      debug.log(
-        "[handleTranslationBtnClick] translationBtn isn't in none state",
-      );
-      videoHandler.actionsAbortController.abort();
-      await videoHandler.stopTranslation();
-      return this;
-    }
-
-    try {
-      debug.log("[handleTranslationBtnClick] trying execute translation");
-      const videoData = await this.getVideoDataForTranslation(videoHandler);
-
-      debug.log(
-        "[handleTranslationBtnClick] Run translateFunc",
-        videoData.videoId,
-      );
-      await videoHandler.translateFunc(
-        videoData.videoId,
-        videoData.isStream,
-        videoData.detectedLanguage,
-        videoData.responseLanguage,
-        videoData.translationHelp,
-      );
-    } catch (err) {
-      // Check if this is an abort error and handle silently
-      if (this.isAbortError(err)) {
-        this.transformBtn("none", localizationProvider.get("translateVideo"));
-        return this;
-      }
-
-      console.error("[VOT]", err);
-      if (!(err instanceof Error)) {
-        this.transformBtn("error", String(err));
-        return this;
-      }
-
-      const message =
-        err.name === "VOTLocalizedError"
-          ? (err as VOTLocalizedError).localizedMessage
-          : err.message;
-      this.transformBtn("error", message);
-    }
-
+    await handleTranslationButtonCommand({
+      videoHandler: this.videoHandler,
+      currentStatus: this.votOverlayView.votButton.status,
+      currentLoading: this.votOverlayView.votButton.loading,
+      transformBtn: (status, text) => {
+        this.transformBtn(status, text);
+      },
+    });
     return this;
-  }
-
-  private async getVideoDataForTranslation(videoHandler: VideoHandler) {
-    if (!videoHandler.videoData?.videoId) {
-      throw new VOTLocalizedError("VOTNoVideoIDFound");
-    }
-
-    if (this.shouldRefreshVideoDataBeforeTranslation(videoHandler)) {
-      videoHandler.videoData = await videoHandler.getVideoData();
-    }
-
-    if (!videoHandler.videoData?.videoId) {
-      throw new VOTLocalizedError("VOTNoVideoIDFound");
-    }
-
-    return videoHandler.videoData;
-  }
-
-  private shouldRefreshVideoDataBeforeTranslation(videoHandler: VideoHandler) {
-    return (
-      (videoHandler.site.host === "vk" &&
-        videoHandler.site.additionalData === "clips") ||
-      videoHandler.site.host === "douyin"
-    );
-  }
-
-  private isAbortError(error: unknown) {
-    return error instanceof Error && error.name === "AbortError";
   }
 
   private isLoadingText(text: string) {
@@ -713,30 +663,6 @@ export class UIManager {
       status === "error" && this.isLoadingText(text);
     this.votOverlayView.votButton.setText(text);
     this.votOverlayView.votButtonTooltip.setContent(text);
-    return this;
-  }
-
-  releaseUI(initialized = false) {
-    if (!this.isInitialized()) {
-      throw new Error("[VOT] UIManager isn't initialized");
-    }
-
-    this.votOverlayView.releaseUI(true);
-    this.votSettingsView.releaseUI(true);
-    this.votGlobalPortal.remove();
-    this.initialized = initialized;
-
-    return this;
-  }
-
-  releaseUIEvents(initialized = false) {
-    if (!this.isInitialized()) {
-      throw new Error("[VOT] UIManager isn't initialized");
-    }
-
-    this.votOverlayView.releaseUIEvents(false);
-    this.votSettingsView.releaseUIEvents(false);
-    this.initialized = initialized;
     return this;
   }
 

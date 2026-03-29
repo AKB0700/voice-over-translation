@@ -241,5 +241,8 @@
   "VOTLoginViaToken": "Token orqali kirish",
   "subtitlesSmartLayout": "Aqlli subtitr tartibi",
   "smartDucking": "Moslashuvchan hajm",
-  "VOTAutoSubtitles": "Ochiq subtitrlar"
+  "VOTAutoSubtitles": "Ochiq subtitrlar",
+  "VOTSubtitlesFont": "Subtitr shrifti",
+  "VOTDefaultSubtitlesLanguage": "Andoza subtitr tili",
+  "VOTOriginalVideoLanguage": "Asl video tili"
 }

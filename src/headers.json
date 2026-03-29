@@ -1,7 +1,7 @@
 {
   "name": "[VOT] - Voice Over Translation",
   "description": "A small extension that adds a Yandex Browser video translation to other browsers",
-  "version": "1.11.2",
+  "version": "1.11.4.2",
   "author": "Toil, SashaXser, MrSoczekXD, mynovelhost, sodapng",
   "namespace": "vot",
   "icon": "https://translate.yandex.ru/icons/favicon.ico",
@@ -121,7 +121,7 @@
     "*://*.bunkr.ac/*",
     "*://*.bunkr.ax/*",
     "*://web.telegram.org/k/*",
-    "*://t2mc.toil.cc/*",
+    "*://rust-server-531j.onrender.com/*",
     "*://mylearn.oracle.com/*",
     "*://learn.deeplearning.ai/*",
     "*://learn-staging.deeplearning.ai/*",
@@ -132,6 +132,10 @@
     "*://iframe.mediadelivery.net/*",
     "*://video.bunnycdn.com/*",
     "*://*.weibo.com/*",
+    "*://*.jove.com/*",
+    "*://*.preservetube.com/*",
+    "*://*.mediafile.cc/*",
+    "*://projector.datacamp.com/*",
     "*://*/*.mp4*",
     "*://*/*.webm*"
   ],

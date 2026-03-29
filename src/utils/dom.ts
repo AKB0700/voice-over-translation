@@ -21,48 +21,104 @@ export function containsCrossShadow(container: Node, target: Node): boolean {
   return false;
 }
 
+export function isDocumentViewportElement(
+  element: Element | null | undefined,
+): boolean {
+  return element === document.body || element === document.documentElement;
+}
+
+export function resolveScopedFullscreenElement(
+  fullscreenEl: Element | null | undefined,
+  anchors: Array<Node | null | undefined>,
+  options: {
+    allowDocumentViewport?: boolean;
+  } = {},
+): HTMLElement | null {
+  const { allowDocumentViewport = false } = options;
+
+  if (!(fullscreenEl instanceof HTMLElement)) {
+    return null;
+  }
+
+  if (isDocumentViewportElement(fullscreenEl) && !allowDocumentViewport) {
+    return null;
+  }
+
+  for (const anchor of anchors) {
+    if (
+      anchor &&
+      (containsCrossShadow(fullscreenEl, anchor) ||
+        containsCrossShadow(anchor, fullscreenEl))
+    ) {
+      return fullscreenEl;
+    }
+  }
+
+  return null;
+}
+
+type CrossShadowTarget = Element | Document;
+
 export function closestCrossShadow(
-  element: Element | Document | null,
+  element: CrossShadowTarget | null,
   selector: string,
 ): Element | null {
   if (!element || !selector) return null;
   const origin = element instanceof Document ? null : element;
 
-  const walk = (current: Element | Document | null): Element | null => {
-    if (!current) return null;
+  return walkCrossShadow(element, selector, origin);
+}
 
-    if (current instanceof Document) {
-      if (origin) {
-        const matches = current.querySelectorAll(selector);
-        for (const match of matches) {
-          if (containsCrossShadow(match, origin)) {
-            return match;
-          }
-        }
-        return null;
-      }
-      return current.querySelector(selector);
+function findMatchingDocumentElement(
+  current: Document,
+  selector: string,
+  origin: Element | null,
+): Element | null {
+  if (!origin) {
+    return current.querySelector(selector);
+  }
+
+  const matches = current.querySelectorAll(selector);
+  for (const match of matches) {
+    if (containsCrossShadow(match, origin)) {
+      return match;
     }
+  }
 
-    const closest = current.closest(selector);
-    if (closest) return closest;
+  return null;
+}
 
-    const root = current.getRootNode();
-    if (root instanceof ShadowRoot) {
-      return walk(root.host);
+function getNextCrossShadowTarget(current: Element): Element | Document | null {
+  const root = current.getRootNode();
+  if (root instanceof ShadowRoot) {
+    return root.host;
+  }
+  if (root instanceof Document) {
+    return root;
+  }
+  if (root !== current) {
+    const parent = getComposableParent(root);
+    if (parent && parent !== current && parent instanceof Element) {
+      return parent;
     }
-    if (root instanceof Document) {
-      return walk(root);
-    }
-    if (root !== current) {
-      const parent = getComposableParent(root);
-      if (parent && parent !== current && parent instanceof Element) {
-        return walk(parent);
-      }
-    }
+  }
 
-    return null;
-  };
+  return null;
+}
 
-  return walk(element);
+function walkCrossShadow(
+  current: Element | Document | null,
+  selector: string,
+  origin: Element | null,
+): Element | null {
+  if (!current) return null;
+
+  if (current instanceof Document) {
+    return findMatchingDocumentElement(current, selector, origin);
+  }
+
+  const closest = current.closest(selector);
+  if (closest) return closest;
+
+  return walkCrossShadow(getNextCrossShadowTarget(current), selector, origin);
 }

@@ -241,5 +241,8 @@
   "VOTLoginViaToken": "Токен арқылы кіру",
   "subtitlesSmartLayout": "Ақылды субтитр орналасуы",
   "smartDucking": "Адаптивті көлем",
-  "VOTAutoSubtitles": "Ашық субтитрлер"
+  "VOTAutoSubtitles": "Ашық субтитрлер",
+  "VOTSubtitlesFont": "Субтитр қаріпі",
+  "VOTDefaultSubtitlesLanguage": "Әдепкі субтитр тілі",
+  "VOTOriginalVideoLanguage": "Түпнұсқа бейне тілі"
 }

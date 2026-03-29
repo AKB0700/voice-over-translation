@@ -240,5 +240,8 @@
   "VOTLoginViaToken": "Login via token",
   "subtitlesSmartLayout": "Smart subtitle layout",
   "smartDucking": "Volume adaptativo",
-  "VOTAutoSubtitles": "Legendas em aberto"
+  "VOTAutoSubtitles": "Legendas em aberto",
+  "VOTSubtitlesFont": "Fonte do subtítulo",
+  "VOTDefaultSubtitlesLanguage": "Idioma predefinido das legendas",
+  "VOTOriginalVideoLanguage": "Língua do vídeo Original"
 }

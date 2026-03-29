@@ -63,7 +63,7 @@ export type Locale =
   | "zh"
   | "zu";
 
-export type Hashes = Record<Locale, string>;
+export type LangOverride = "auto" | Locale;
 
 export type Phrase =
   | "recommended"
@@ -99,6 +99,8 @@ export type Phrase =
   | "VOTNoVideoIDFound"
   | "VOTSubtitles"
   | "VOTSubtitlesDisabled"
+  | "VOTDefaultSubtitlesLanguage"
+  | "VOTOriginalVideoLanguage"
   | "VOTSubtitlesMaxLength"
   | "VOTHighlightWords"
   | "VOTTranslatedFrom"
@@ -247,6 +249,7 @@ export type Phrase =
   | "translationTakeApproximatelyMinute2"
   | "VOTAudioBooster"
   | "VOTSubtitlesDesign"
+  | "VOTSubtitlesFont"
   | "VOTSubtitlesFontSize"
   | "VOTSubtitlesOpacity"
   | "VOTSubtitlesDownloadFormat"
@@ -339,6 +342,8 @@ export type Phrases = {
   VOTNoVideoIDFound: string;
   VOTSubtitles: string;
   VOTSubtitlesDisabled: string;
+  VOTDefaultSubtitlesLanguage: string;
+  VOTOriginalVideoLanguage: string;
   VOTSubtitlesMaxLength: string;
   VOTHighlightWords: string;
   VOTTranslatedFrom: string;
@@ -489,6 +494,7 @@ export type Phrases = {
   translationTakeApproximatelyMinute2: string;
   VOTAudioBooster: string;
   VOTSubtitlesDesign: string;
+  VOTSubtitlesFont: string;
   VOTSubtitlesFontSize: string;
   VOTSubtitlesOpacity: string;
   VOTSubtitlesDownloadFormat: string;

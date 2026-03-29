@@ -1,11 +1,34 @@
 import type { Account } from "../types/storage";
 import { votStorage } from "../utils/storage";
+import { notifyAuthOpener } from "./authRefreshMessage";
 
-declare global {
-  // Profile payload injected by Yandex account page runtime.
-  const _userData: {
-    avatar_id: string;
-    username: string;
+type AuthProfilePayload = {
+  avatar_id: string;
+  username: string;
+};
+
+function getProfilePayload(): AuthProfilePayload | null {
+  const payload = (globalThis as { _userData?: unknown })._userData;
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const candidate = payload as {
+    avatar_id?: unknown;
+    username?: unknown;
+  };
+  if (
+    typeof candidate.avatar_id !== "string" ||
+    typeof candidate.username !== "string" ||
+    candidate.avatar_id.length === 0 ||
+    candidate.username.length === 0
+  ) {
+    return null;
+  }
+
+  return {
+    avatar_id: candidate.avatar_id,
+    username: candidate.username,
   };
 }
 
@@ -29,14 +52,15 @@ async function handleAuthCallbackPage() {
     username: undefined,
     avatarId: undefined,
   });
+  notifyAuthOpener();
 }
 
 async function handleProfilePage() {
-  const { avatar_id: avatarId, username } = _userData;
-
-  if (!avatarId || !username) {
+  const payload = getProfilePayload();
+  if (!payload) {
     throw new Error("[VOT] Invalid user data");
   }
+  const { avatar_id: avatarId, username } = payload;
 
   const data = await votStorage.get<Account>("account");
   if (!data) {
@@ -48,14 +72,15 @@ async function handleProfilePage() {
     username,
     avatarId,
   });
+  notifyAuthOpener();
 }
 
 export async function initAuth() {
   if (globalThis.location.pathname === "/auth/callback") {
-    return await handleAuthCallbackPage();
+    return handleAuthCallbackPage();
   }
 
   if (globalThis.location.pathname === "/my/profile") {
-    return await handleProfilePage();
+    return handleProfilePage();
   }
 }

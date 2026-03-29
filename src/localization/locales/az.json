@@ -241,5 +241,8 @@
   "VOTLoginViaToken": "Token ilə daxil olun",
   "subtitlesSmartLayout": "Düşüncəli Altyazı düzeni",
   "smartDucking": "Adaptiv həcm",
-  "VOTAutoSubtitles": "Açıldıqda altyazılar"
+  "VOTAutoSubtitles": "Açıldıqda altyazılar",
+  "VOTSubtitlesFont": "Altyazı şrifti",
+  "VOTDefaultSubtitlesLanguage": "Varsayılan Altyazı dili",
+  "VOTOriginalVideoLanguage": "Orijinal videonun dili"
 }

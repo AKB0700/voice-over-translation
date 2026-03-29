@@ -1,7 +1,12 @@
 import type { VideoHandler } from "../..";
-import type { LangOverride } from "../../localization/localizationProvider";
+import type { LangOverride } from "../../types/localization";
+import type { SubtitleFontFamily } from "../../types/subtitles";
 import type { Position } from "../components/votButton";
-import type { Account, StorageData } from "../storage";
+import type {
+  Account,
+  ResponseLanguageSubtitles,
+  StorageData,
+} from "../storage";
 import type { TranslateService } from "../translateApis";
 
 export type SettingsViewProps = {
@@ -22,6 +27,8 @@ export type SettingsViewEventMap = {
   "change:useLivelyVoice": [checked: boolean];
   "change:subtitlesHighlightWords": [checked: boolean];
   "change:subtitlesSmartLayout": [checked: boolean];
+  "select:responseLanguageSubtitles": [item: ResponseLanguageSubtitles];
+  "select:subtitlesFontFamily": [item: SubtitleFontFamily];
   "change:proxyWorkerHost": [value: string];
   "change:useNewAudioPlayer": [checked: boolean];
   "change:onlyBypassMediaCSP": [checked: boolean];

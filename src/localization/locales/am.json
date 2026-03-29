@@ -241,5 +241,8 @@
   "VOTLoginViaToken": "በቶከን በኩል ይግቡ",
   "subtitlesSmartLayout": "ዘመናዊ ንዑስ ርዕስ አቀማመጥ",
   "smartDucking": "የመላመድ ድምጽ",
-  "VOTAutoSubtitles": "ክፍት ላይ ንዑስ ርዕሶች"
+  "VOTAutoSubtitles": "ክፍት ላይ ንዑስ ርዕሶች",
+  "VOTSubtitlesFont": "የፊደል ቅርጽ",
+  "VOTDefaultSubtitlesLanguage": "ነባሪ የትርጉም ቋንቋ",
+  "VOTOriginalVideoLanguage": "የመጀመሪያው የቪዲዮ ቋንቋ"
 }

@@ -1,5 +1,5 @@
 import type { ResponseLang } from "@vot.js/shared/types/data";
-import type { SubtitleFormat } from "@vot.js/shared/types/subs";
+import type { SubtitleFontFamily, SubtitleFormat } from "../types/subtitles";
 import type { LanguageSelectKey } from "./components/select";
 import type { Position } from "./components/votButton";
 import type { DetectService, TranslateService } from "./translateApis";
@@ -8,8 +8,16 @@ export type LocaleStorageKey =
   | "localePhrases"
   | "localeLang"
   | "localeHash"
+  | "localeVersion"
   | "localeUpdatedAt"
   | "localeLangOverride";
+
+export const subtitleResponseLanguageModes = ["auto", "original"] as const;
+export type SubtitleResponseLanguageMode =
+  (typeof subtitleResponseLanguageModes)[number];
+export type ResponseLanguageSubtitles =
+  | SubtitleResponseLanguageMode
+  | Exclude<LanguageSelectKey, "auto">;
 
 export type ConvertCategory = "numToBool" | "number" | "array" | "string";
 export type ConvertDataItem = [oldName: string, newName?: string];
@@ -32,9 +40,11 @@ export const storageKeys = [
   "subtitlesSmartLayout",
   "highlightWords",
   "subtitlesFontSize",
+  "subtitlesFontFamily",
   "subtitlesOpacity",
   "subtitlesDownloadFormat",
   "responseLanguage",
+  "responseLanguageSubtitles",
   "defaultVolume",
   "onlyBypassMediaCSP",
   "newAudioPlayer",
@@ -56,6 +66,7 @@ export const storageKeys = [
   "localePhrases",
   "localeLang",
   "localeHash",
+  "localeVersion",
   "localeUpdatedAt",
   "localeLangOverride",
   "account",
@@ -98,9 +109,11 @@ export type StorageData = {
   subtitlesSmartLayout: boolean;
   highlightWords: boolean;
   subtitlesFontSize: number;
+  subtitlesFontFamily: SubtitleFontFamily;
   subtitlesOpacity: number;
   subtitlesDownloadFormat: SubtitleFormat;
   responseLanguage: ResponseLang;
+  responseLanguageSubtitles: ResponseLanguageSubtitles;
   defaultVolume: number;
   onlyBypassMediaCSP: boolean;
   newAudioPlayer: boolean;
@@ -124,6 +137,7 @@ export type StorageData = {
   localePhrases: string;
   localeLang: string;
   localeHash: string;
+  localeVersion: string;
   localeUpdatedAt: number;
   localeLangOverride: string;
 };

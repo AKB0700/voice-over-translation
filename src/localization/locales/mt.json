@@ -241,5 +241,8 @@
   "VOTLoginViaToken": "Idħol permezz tat-token",
   "subtitlesSmartLayout": "Tqassim ta'sottotitolu intelliġenti",
   "smartDucking": "Volum adattiv",
-  "VOTAutoSubtitles": "Sottotitoli fuq miftuħa"
+  "VOTAutoSubtitles": "Sottotitoli fuq miftuħa",
+  "VOTSubtitlesFont": "Font tas-sottotitolu",
+  "VOTDefaultSubtitlesLanguage": "Lingwa tas-sottotitolu Default",
+  "VOTOriginalVideoLanguage": "Lingwa tal-vidjo oriġinali"
 }

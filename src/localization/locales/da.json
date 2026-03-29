@@ -241,5 +241,8 @@
   "VOTLoginViaToken": "Log ind via token",
   "subtitlesSmartLayout": "Smart undertekstlayout",
   "smartDucking": "Adaptiv volumen",
-  "VOTAutoSubtitles": "Undertekster på åben"
+  "VOTAutoSubtitles": "Undertekster på åben",
+  "VOTSubtitlesFont": "Undertekstfont",
+  "VOTDefaultSubtitlesLanguage": "Standard undertekstsprog",
+  "VOTOriginalVideoLanguage": "Original video sprog"
 }

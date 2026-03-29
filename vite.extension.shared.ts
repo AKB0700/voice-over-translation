@@ -1,18 +1,31 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
 
 import { build as viteBuild } from "vite";
 import { COMPRESSION_LEVEL, zip } from "zip-a-folder";
+import {
+  createViteConfig,
+  defineConstants,
+  rootDir,
+  type ViteDefine,
+} from "./vite.base.config";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-export const rootDir = __dirname;
+export { rootDir } from "./vite.base.config";
 export const srcDir = path.join(rootDir, "src");
 export const outBase = path.join(rootDir, "dist-ext");
 export const outTmp = path.join(outBase, "_tmp");
+
+const DEFAULT_EXTENSION_NAME = "Voice Over Translation";
+const DEFAULT_EXTENSION_DESCRIPTION = "Voice Over Translation";
+const DEFAULT_EXTENSION_VERSION = "0.0.0";
+const EXTENSION_ICON_SIZES = [16, 32, 48, 64, 96, 128, 256] as const;
+const EXTENSION_LOADER_FILES = ["prelude.js", "content.js"] as const;
+const EXTENSION_MODULE_FILES = [
+  "prelude.module.js",
+  "content.module.js",
+] as const;
+const EXTENSION_WEB_ACCESSIBLE_JS_GLOBS = ["*.js"] as const;
 
 const GITHUB_DIST_EXT_RAW_BASE =
   "https://raw.githubusercontent.com/ilyhalight/voice-over-translation/master/dist-ext";
@@ -47,14 +60,14 @@ interface ExtensionEntry {
 const extensionEntries: ExtensionEntry[] = [
   {
     entry: "src/index.ts",
-    format: "iife",
-    fileName: "content.js",
+    format: "es",
+    fileName: "content.module.js",
     emptyOutDir: true,
   },
   {
     entry: "src/extension/prelude.ts",
-    format: "iife",
-    fileName: "prelude.js",
+    format: "es",
+    fileName: "prelude.module.js",
     emptyOutDir: false,
   },
   {
@@ -84,6 +97,79 @@ export async function exists(filePath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function parseNumericVersionParts(version: string): number[] | null {
+  const parts = String(version)
+    .trim()
+    .split(".")
+    .map((part) => part.trim());
+
+  if (!parts.length || parts.some((part) => !/^\d+$/.test(part))) {
+    return null;
+  }
+
+  return parts.map(Number);
+}
+
+function compareVersions(left: string, right: string): number {
+  const leftNumeric = parseNumericVersionParts(left);
+  const rightNumeric = parseNumericVersionParts(right);
+
+  if (leftNumeric && rightNumeric) {
+    const maxLength = Math.max(leftNumeric.length, rightNumeric.length);
+    for (let index = 0; index < maxLength; index += 1) {
+      const leftPart = leftNumeric[index] ?? 0;
+      const rightPart = rightNumeric[index] ?? 0;
+      if (leftPart > rightPart) return 1;
+      if (leftPart < rightPart) return -1;
+    }
+    return 0;
+  }
+
+  return left.localeCompare(right, undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
+}
+
+function escapeRegExp(value: string): string {
+  return value.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function cleanupOlderVersionedArtifacts({
+  artifactPrefix,
+  fileExtension,
+  currentVersion,
+}: {
+  artifactPrefix: string;
+  fileExtension: string;
+  currentVersion: string;
+}): Promise<string[]> {
+  const removedFiles: string[] = [];
+  const versionedArtifactPattern = new RegExp(
+    `^${escapeRegExp(artifactPrefix)}-(.+)${escapeRegExp(fileExtension)}$`,
+  );
+
+  let entries: string[] = [];
+  try {
+    entries = await fs.readdir(outBase);
+  } catch {
+    return removedFiles;
+  }
+
+  for (const entry of entries) {
+    const match = versionedArtifactPattern.exec(entry);
+    if (!match) continue;
+
+    const artifactVersion = match[1];
+    if (compareVersions(artifactVersion, currentVersion) >= 0) continue;
+
+    await fs.rm(path.join(outBase, entry), { force: true });
+    removedFiles.push(entry);
+  }
+
+  return removedFiles;
 }
 
 export async function readJson<T>(filePath: string): Promise<T> {
@@ -139,36 +225,27 @@ async function buildEntry({
   format: "iife" | "es";
   fileName: string;
   emptyOutDir: boolean;
-  define: Record<string, string>;
+  define: ViteDefine;
 }): Promise<void> {
-  await viteBuild({
-    root: rootDir,
-    configFile: false,
-    define: {
-      ...define,
-    },
-    css: {
-      transformer: "lightningcss",
-    },
-    build: {
-      target: "es2020",
-      outDir: outTmp,
-      emptyOutDir,
-      sourcemap: false,
-      minify: "esbuild",
-      lib: {
-        entry: path.join(rootDir, entry),
-        name: "VOT",
-        formats: [format],
-        fileName: () => fileName,
-      },
-      rollupOptions: {
-        output: {
-          inlineDynamicImports: true,
+  await viteBuild(
+    createViteConfig({
+      root: rootDir,
+      configFile: false,
+      define,
+      build: {
+        outDir: outTmp,
+        emptyOutDir,
+        sourcemap: false,
+        minify: "oxc",
+        lib: {
+          entry: path.join(rootDir, entry),
+          name: "VOT",
+          formats: [format],
+          fileName: () => fileName,
         },
       },
-    },
-  });
+    }),
+  );
 }
 
 export async function buildExtensionBundles({
@@ -178,35 +255,22 @@ export async function buildExtensionBundles({
   context: ExtensionBuildContext;
   headers: ExtensionHeaders;
 }): Promise<void> {
-  const defineMeta = {
-    DEBUG_MODE: "false",
-    IS_EXTENSION: "true",
-    AVAILABLE_LOCALES: JSON.stringify(context.availableLocales),
-    REPO_BRANCH: JSON.stringify(context.repoBranch),
-    VOT_AUTHORS: JSON.stringify(String(headers.author || "")),
-  };
+  const defineMeta = defineConstants({
+    DEBUG_MODE: false,
+    IS_EXTENSION: true,
+    AVAILABLE_LOCALES: context.availableLocales,
+    REPO_BRANCH: context.repoBranch,
+    VOT_VERSION: String(headers.version || ""),
+    VOT_AUTHORS: String(headers.author || ""),
+  });
 
   await ensureCleanDir(outTmp);
   for (const entry of extensionEntries) {
     await buildEntry({
-      entry: entry.entry,
-      format: entry.format,
-      fileName: entry.fileName,
-      emptyOutDir: entry.emptyOutDir,
+      ...entry,
       define: defineMeta,
     });
   }
-}
-
-async function renameContentCss(): Promise<void> {
-  const entries = await fs.readdir(outTmp);
-  const cssFiles = entries.filter((entry) => entry.endsWith(".css"));
-  if (!cssFiles.length) return;
-  if (cssFiles.includes("content.css")) return;
-
-  const from = path.join(outTmp, cssFiles[0]);
-  const to = path.join(outTmp, "content.css");
-  await fs.rename(from, to);
 }
 
 async function copyExtensionFiles(
@@ -218,15 +282,23 @@ async function copyExtensionFiles(
 ): Promise<void> {
   await fs.mkdir(targetDir, { recursive: true });
 
-  const filesToCopy = [
-    "bridge.js",
-    "prelude.js",
-    "content.js",
-    "content.css",
-  ];
-  for (const fileName of filesToCopy) {
-    await fs.copyFile(path.join(outTmp, fileName), path.join(targetDir, fileName));
+  const bundleFiles = await fs.readdir(outTmp);
+  const frontEndJsFiles = bundleFiles.filter((fileName) => {
+    if (!fileName.endsWith(".js")) {
+      return false;
+    }
+
+    return !["background.js", "background-ff.js"].includes(fileName);
+  });
+
+  for (const fileName of frontEndJsFiles) {
+    await fs.copyFile(
+      path.join(outTmp, fileName),
+      path.join(targetDir, fileName),
+    );
   }
+
+  await writeExtensionLoaders(targetDir);
 
   await fs.copyFile(
     path.join(outTmp, backgroundSrc),
@@ -245,7 +317,22 @@ async function copyExtensionFiles(
   }
 }
 
-function normalizeHostPermission(entry: string | undefined | null): string | null {
+async function writeExtensionLoaders(targetDir: string): Promise<void> {
+  const loaders: Record<(typeof EXTENSION_LOADER_FILES)[number], string> = {
+    "prelude.js": "\n",
+    "content.js": "\n",
+  };
+
+  await Promise.all(
+    EXTENSION_LOADER_FILES.map((fileName) =>
+      fs.writeFile(path.join(targetDir, fileName), loaders[fileName], "utf8"),
+    ),
+  );
+}
+
+function normalizeHostPermission(
+  entry: string | undefined | null,
+): string | null {
   if (!entry) return null;
   const value = String(entry).trim();
   if (!value) return null;
@@ -262,12 +349,41 @@ function normalizeHostPermission(entry: string | undefined | null): string | nul
 }
 
 function normalizeHostPermissions(list: string[] = []): string[] {
-  const normalized: string[] = [];
-  for (const item of list) {
-    const value = normalizeHostPermission(item);
-    if (value) normalized.push(value);
-  }
+  const normalized = list
+    .map((item) => normalizeHostPermission(item))
+    .filter((value): value is string => Boolean(value));
+
   return [...new Set(normalized)];
+}
+
+function normalizeWebAccessibleResourceMatch(
+  pattern: string | undefined | null,
+): string | null {
+  if (!pattern) return null;
+  const value = String(pattern).trim();
+  if (!value) return null;
+  if (value === "<all_urls>") {
+    return "*://*/*";
+  }
+
+  const match = /^([^:]+:\/\/[^/]+)(\/.*)?$/.exec(value);
+  if (!match) {
+    return null;
+  }
+
+  return `${match[1]}/*`;
+}
+
+function normalizeWebAccessibleResourceMatches(
+  matches: string[] = [],
+): string[] {
+  return [
+    ...new Set(
+      matches
+        .map((pattern) => normalizeWebAccessibleResourceMatch(pattern))
+        .filter((pattern): pattern is string => Boolean(pattern)),
+    ),
+  ];
 }
 
 function splitMatchesForOriginFallback(matches: string[] = []): {
@@ -292,6 +408,68 @@ function splitMatchesForOriginFallback(matches: string[] = []): {
   return { originFallbackMatches, directMatches };
 }
 
+function buildIconsMap(sizes: readonly number[]): Record<number, string> {
+  return Object.fromEntries(
+    sizes.map((size) => [size, `icons/icon-${size}.png`]),
+  ) as Record<number, string>;
+}
+
+function createContentScriptEntries({
+  matches,
+  excludeMatches,
+  includeWorld,
+  matchOriginAsFallback = false,
+}: {
+  matches: string[];
+  excludeMatches: string[];
+  includeWorld: boolean;
+  matchOriginAsFallback?: boolean;
+}): Record<string, unknown>[] {
+  if (!matches.length) return [];
+
+  const fallbackConfig = matchOriginAsFallback
+    ? { match_origin_as_fallback: true }
+    : {};
+
+  return [
+    {
+      matches,
+      exclude_matches: excludeMatches,
+      js: ["bridge.js"],
+      all_frames: true,
+      match_about_blank: true,
+      run_at: "document_start",
+      ...fallbackConfig,
+    },
+    {
+      matches,
+      exclude_matches: excludeMatches,
+      js: ["prelude.js", "content.js"],
+      all_frames: true,
+      match_about_blank: true,
+      run_at: "document_idle",
+      ...(includeWorld ? { world: "MAIN" } : {}),
+      ...fallbackConfig,
+    },
+  ];
+}
+
+function createWebAccessibleResources(
+  matches: string[],
+): Array<Record<string, unknown>> {
+  const normalizedMatches = normalizeWebAccessibleResourceMatches(matches);
+  if (!normalizedMatches.length) {
+    return [];
+  }
+
+  return [
+    {
+      resources: [...EXTENSION_WEB_ACCESSIBLE_JS_GLOBS],
+      matches: normalizedMatches,
+    },
+  ];
+}
+
 function buildManifestChrome({
   headers,
   includeWorld,
@@ -299,64 +477,27 @@ function buildManifestChrome({
   headers: ExtensionHeaders;
   includeWorld: boolean;
 }): Record<string, unknown> {
-  const name = headers.name || "Voice Over Translation";
-  const description = headers.description || "Voice Over Translation";
-  const version = headers.version || "0.0.0";
+  const name = headers.name || DEFAULT_EXTENSION_NAME;
+  const description = headers.description || DEFAULT_EXTENSION_DESCRIPTION;
+  const version = headers.version || DEFAULT_EXTENSION_VERSION;
   const matches = headers.match || [];
   const excludeMatches = headers.exclude || [];
   const { originFallbackMatches, directMatches } =
     splitMatchesForOriginFallback(matches);
   const hostPermissions = normalizeHostPermissions(headers.connect || []);
-
-  const bridgeScript = {
-    js: ["bridge.js"],
-    all_frames: true,
-    match_about_blank: true,
-    run_at: "document_start",
-  };
-
-  const mainWorldScripts: Record<string, unknown> = {
-    js: ["prelude.js", "content.js"],
-    css: ["content.css"],
-    all_frames: true,
-    match_about_blank: true,
-    run_at: "document_idle",
-    ...(includeWorld ? { world: "MAIN" } : {}),
-  };
-
-  const contentScripts: Record<string, unknown>[] = [];
-
-  if (originFallbackMatches.length) {
-    contentScripts.push(
-      {
-        matches: originFallbackMatches,
-        exclude_matches: excludeMatches,
-        ...bridgeScript,
-        match_origin_as_fallback: true,
-      },
-      {
-        matches: originFallbackMatches,
-        exclude_matches: excludeMatches,
-        ...mainWorldScripts,
-        match_origin_as_fallback: true,
-      },
-    );
-  }
-
-  if (directMatches.length) {
-    contentScripts.push(
-      {
-        matches: directMatches,
-        exclude_matches: excludeMatches,
-        ...bridgeScript,
-      },
-      {
-        matches: directMatches,
-        exclude_matches: excludeMatches,
-        ...mainWorldScripts,
-      },
-    );
-  }
+  const contentScripts = [
+    ...createContentScriptEntries({
+      matches: originFallbackMatches,
+      excludeMatches,
+      includeWorld,
+      matchOriginAsFallback: true,
+    }),
+    ...createContentScriptEntries({
+      matches: directMatches,
+      excludeMatches,
+      includeWorld,
+    }),
+  ];
 
   return {
     manifest_version: 3,
@@ -365,10 +506,7 @@ function buildManifestChrome({
     version,
     action: {
       default_title: name,
-      default_icon: {
-        16: "icons/icon-16.png",
-        32: "icons/icon-32.png",
-      },
+      default_icon: buildIconsMap([16, 32]),
     },
     permissions: [
       "storage",
@@ -381,16 +519,9 @@ function buildManifestChrome({
       service_worker: "background.js",
       type: "module",
     },
-    icons: {
-      16: "icons/icon-16.png",
-      32: "icons/icon-32.png",
-      48: "icons/icon-48.png",
-      64: "icons/icon-64.png",
-      96: "icons/icon-96.png",
-      128: "icons/icon-128.png",
-      256: "icons/icon-256.png",
-    },
+    icons: buildIconsMap(EXTENSION_ICON_SIZES),
     content_scripts: contentScripts,
+    web_accessible_resources: createWebAccessibleResources(matches),
   };
 }
 
@@ -406,8 +537,35 @@ function getFirefoxStrictMinVersion(): string {
   return process.env.FIREFOX_STRICT_MIN_VERSION || "140.0";
 }
 
-function getFirefoxAndroidStrictMinVersion(): string {
-  return process.env.FIREFOX_ANDROID_STRICT_MIN_VERSION || "142.0";
+function compareFirefoxVersions(left: string, right: string): number {
+  const leftParts = left
+    .split(".")
+    .map((part) => Number.parseInt(part, 10) || 0);
+  const rightParts = right
+    .split(".")
+    .map((part) => Number.parseInt(part, 10) || 0);
+  const length = Math.max(leftParts.length, rightParts.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const diff = (leftParts[index] || 0) - (rightParts[index] || 0);
+    if (diff !== 0) {
+      return diff;
+    }
+  }
+
+  return 0;
+}
+
+function getFirefoxAndroidSettings(): Record<string, string> {
+  const strictMinVersion =
+    process.env.FIREFOX_ANDROID_STRICT_MIN_VERSION?.trim();
+  const strictMaxVersion =
+    process.env.FIREFOX_ANDROID_STRICT_MAX_VERSION?.trim();
+
+  return {
+    ...(strictMinVersion ? { strict_min_version: strictMinVersion } : {}),
+    ...(strictMaxVersion ? { strict_max_version: strictMaxVersion } : {}),
+  };
 }
 
 function getFirefoxDataCollectionPermissions(): {
@@ -428,8 +586,29 @@ function getFirefoxDataCollectionPermissions(): {
 
   return {
     required,
-    ...(optional && optional.length ? { optional } : {}),
+    ...(optional?.length ? { optional } : {}),
   };
+}
+
+function getFirefoxAndroidSettingsForDataCollectionPermissions(): Record<
+  string,
+  string
+> {
+  const androidSettings = getFirefoxAndroidSettings();
+  const androidMinVersion = androidSettings.strict_min_version?.trim();
+  const requiredAndroidMinVersion = "142.0";
+
+  if (
+    !androidMinVersion ||
+    compareFirefoxVersions(androidMinVersion, requiredAndroidMinVersion) < 0
+  ) {
+    return {
+      ...androidSettings,
+      strict_min_version: requiredAndroidMinVersion,
+    };
+  }
+
+  return androidSettings;
 }
 
 function getFirefoxXpiRawUrl(version: string): string {
@@ -444,9 +623,12 @@ function buildManifestFirefox({
   includeWorld: boolean;
 }): Record<string, unknown> {
   const manifest = buildManifestChrome({ headers, includeWorld });
+  const dataCollectionPermissions = getFirefoxDataCollectionPermissions();
 
   const action = manifest.action as Record<string, unknown> | undefined;
-  const defaultIcon = action?.default_icon as Record<string, unknown> | undefined;
+  const defaultIcon = action?.default_icon as
+    | Record<string, unknown>
+    | undefined;
   if (defaultIcon) {
     defaultIcon[64] = "icons/icon-64.png";
   }
@@ -461,11 +643,13 @@ function buildManifestFirefox({
       id: getFirefoxAddonId(),
       update_url: FIREFOX_UPDATES_MANIFEST_URL,
       strict_min_version: getFirefoxStrictMinVersion(),
-      data_collection_permissions: getFirefoxDataCollectionPermissions(),
+      data_collection_permissions: dataCollectionPermissions,
     },
-    gecko_android: {
-      strict_min_version: getFirefoxAndroidStrictMinVersion(),
-    },
+    gecko_android:
+      dataCollectionPermissions.required.length ||
+      dataCollectionPermissions.optional?.length
+        ? getFirefoxAndroidSettingsForDataCollectionPermissions()
+        : getFirefoxAndroidSettings(),
   };
 
   return manifest;
@@ -512,7 +696,10 @@ async function writeFirefoxUpdatesManifest({
   return updatesManifestPath;
 }
 
-async function zipDir(sourceDirPath: string, outZipPath: string): Promise<void> {
+async function zipDir(
+  sourceDirPath: string,
+  outZipPath: string,
+): Promise<void> {
   await fs.rm(outZipPath, { force: true });
   await fs.mkdir(path.dirname(outZipPath), { recursive: true });
   await zip(sourceDirPath, outZipPath, {
@@ -530,7 +717,11 @@ function getCrx3Bin(): string {
   );
 }
 
-async function runCmd(cmd: string, args: string[], cwd?: string): Promise<void> {
+async function runCmd(
+  cmd: string,
+  args: string[],
+  cwd?: string,
+): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const child = spawn(cmd, args, {
       cwd,
@@ -547,7 +738,7 @@ async function runCmd(cmd: string, args: string[], cwd?: string): Promise<void> 
   });
 }
 
-async function maybeBuildCrx({
+async function _maybeBuildCrx({
   sourceDir,
   version,
 }: {
@@ -564,27 +755,23 @@ async function maybeBuildCrx({
 
   const crx3Bin = getCrx3Bin();
   if (!(await exists(crx3Bin))) {
-    throw new Error(`CRX builder not found: ${crx3Bin}. Install dependencies first.`);
+    throw new Error(
+      `CRX builder not found: ${crx3Bin}. Install dependencies first.`,
+    );
   }
   const outCrx = path.join(outBase, `vot-extension-chrome-${version}.zip`);
   try {
     await runCmd(
       crx3Bin,
-      [
-        "-p",
-        keyPath,
-        "-o",
-        outCrx,
-        "--appVersion",
-        version,
-        sourceDir,
-      ],
+      ["-p", keyPath, "-o", outCrx, "--appVersion", version, sourceDir],
       rootDir,
     );
   } finally {
     if (useTemporaryKey) {
       await fs.rm(keyPath, { force: true });
-      await fs.rm(path.join(outBase, "vot-extension-chrome.pem"), { force: true });
+      await fs.rm(path.join(outBase, "vot-extension-chrome.pem"), {
+        force: true,
+      });
     }
   }
   return {
@@ -628,9 +815,10 @@ function assertOriginFallbackPathIsWildcard(
   }
 }
 
-async function verifyOne(browserName: "chrome" | "firefox"): Promise<void> {
-  const dir = path.join(outBase, browserName);
-  const manifestPath = path.join(dir, "manifest.json");
+async function readVerifiedManifest(
+  browserName: "chrome" | "firefox",
+  manifestPath: string,
+): Promise<Record<string, any>> {
   if (!(await exists(manifestPath))) {
     throw new Error(`${browserName}: missing manifest.json at ${manifestPath}`);
   }
@@ -642,6 +830,13 @@ async function verifyOne(browserName: "chrome" | "firefox"): Promise<void> {
     );
   }
 
+  return manifest;
+}
+
+function verifyManifestPermissions(
+  browserName: "chrome" | "firefox",
+  manifest: Record<string, any>,
+): void {
   const permissions = new Set(manifest.permissions || []);
   if (
     !permissions.has("declarativeNetRequestWithHostAccess") &&
@@ -651,30 +846,51 @@ async function verifyOne(browserName: "chrome" | "firefox"): Promise<void> {
       `${browserName}: expected declarativeNetRequestWithHostAccess or declarativeNetRequest permission`,
     );
   }
+}
 
-  if (browserName === "chrome" && !manifest.background?.service_worker) {
-    throw new Error(`${browserName}: expected background.service_worker`);
+function verifyBrowserSpecificManifestFields(
+  browserName: "chrome" | "firefox",
+  manifest: Record<string, any>,
+): void {
+  if (browserName === "chrome") {
+    if (!manifest.background?.service_worker) {
+      throw new Error(`${browserName}: expected background.service_worker`);
+    }
+    if (manifest.update_url) {
+      throw new Error(`${browserName}: update_url must not be set`);
+    }
+    return;
   }
-  if (browserName === "chrome" && manifest.update_url) {
-    throw new Error(`${browserName}: update_url must not be set`);
-  }
+
   if (
-    browserName === "firefox" &&
-    (!Array.isArray(manifest.background?.scripts) ||
-      !manifest.background.scripts.length)
+    !Array.isArray(manifest.background?.scripts) ||
+    !manifest.background.scripts.length
   ) {
     throw new Error(`${browserName}: expected background.scripts[]`);
   }
   if (
-    browserName === "firefox" &&
     manifest.browser_specific_settings?.gecko?.update_url !==
-      FIREFOX_UPDATES_MANIFEST_URL
+    FIREFOX_UPDATES_MANIFEST_URL
   ) {
     throw new Error(
       `${browserName}: expected browser_specific_settings.gecko.update_url to be ${FIREFOX_UPDATES_MANIFEST_URL}, got ${manifest.browser_specific_settings?.gecko?.update_url}`,
     );
   }
+  if (
+    !manifest.browser_specific_settings?.gecko_android ||
+    typeof manifest.browser_specific_settings.gecko_android !== "object" ||
+    Array.isArray(manifest.browser_specific_settings.gecko_android)
+  ) {
+    throw new Error(
+      `${browserName}: expected browser_specific_settings.gecko_android to be an object`,
+    );
+  }
+}
 
+function verifyContentScripts(
+  browserName: "chrome" | "firefox",
+  manifest: Record<string, any>,
+): void {
   assertValidPatterns(
     "host_permissions",
     browserName,
@@ -711,20 +927,18 @@ async function verifyOne(browserName: "chrome" | "firefox"): Promise<void> {
       `${browserName}: expected at least one content_scripts entry with match_origin_as_fallback: true`,
     );
   }
+}
 
+async function verifyRequiredOutputFiles(
+  browserName: "chrome" | "firefox",
+  dir: string,
+): Promise<void> {
   const requiredFiles = [
     "bridge.js",
-    "prelude.js",
-    "content.js",
-    "content.css",
+    ...EXTENSION_LOADER_FILES,
+    ...EXTENSION_MODULE_FILES,
     "background.js",
-    "icons/icon-16.png",
-    "icons/icon-32.png",
-    "icons/icon-48.png",
-    "icons/icon-64.png",
-    "icons/icon-96.png",
-    "icons/icon-128.png",
-    "icons/icon-256.png",
+    ...EXTENSION_ICON_SIZES.map((size) => `icons/icon-${size}.png`),
   ];
 
   for (const relPath of requiredFiles) {
@@ -733,14 +947,30 @@ async function verifyOne(browserName: "chrome" | "firefox"): Promise<void> {
       throw new Error(`${browserName}: missing required file: ${relPath}`);
     }
   }
+}
 
+async function verifyBundleSources(
+  browserName: "chrome" | "firefox",
+  dir: string,
+): Promise<void> {
   const bridge = await fs.readFile(path.join(dir, "bridge.js"), "utf8");
   const prelude = await fs.readFile(path.join(dir, "prelude.js"), "utf8");
+  const preludeModule = await fs.readFile(
+    path.join(dir, "prelude.module.js"),
+    "utf8",
+  );
   const content = await fs.readFile(path.join(dir, "content.js"), "utf8");
+  const contentModule = await fs.readFile(
+    path.join(dir, "content.module.js"),
+    "utf8",
+  );
   const background = await fs.readFile(path.join(dir, "background.js"), "utf8");
-  const combined = `${bridge}\n${prelude}\n${content}\n${background}`;
+  const combined = `${bridge}\n${prelude}\n${preludeModule}\n${content}\n${contentModule}\n${background}`;
 
-  const forbiddenSnippets = ["cdnjs.cloudflare.com/ajax/libs/hls.js", "@require"];
+  const forbiddenSnippets = [
+    "cdnjs.cloudflare.com/ajax/libs/hls.js",
+    "@require",
+  ];
   for (const snippet of forbiddenSnippets) {
     if (combined.includes(snippet)) {
       throw new Error(
@@ -749,8 +979,73 @@ async function verifyOne(browserName: "chrome" | "firefox"): Promise<void> {
     }
   }
 
+  if (/import\s*\(/.test(bridge)) {
+    throw new Error(
+      `${browserName}: expected bridge.js to avoid dynamic imports`,
+    );
+  }
+
+  for (const [fileName, source] of [
+    ["prelude.js", prelude],
+    ["content.js", content],
+  ] as const) {
+    if (/import\s*\(/.test(source)) {
+      throw new Error(
+        `${browserName}: expected ${fileName} to stay inert and avoid dynamic imports`,
+      );
+    }
+  }
+
+  const moduleImportTargets = Array.from(
+    new Set(
+      [preludeModule, contentModule]
+        .flatMap((source) =>
+          Array.from(
+            source.matchAll(/from\s+"(\.\/[^"]+\.js)"/g),
+            (match) => match[1],
+          ),
+        )
+        .map((pathValue) => pathValue.replace(/^\.\//, "")),
+    ),
+  );
+  for (const importedFile of moduleImportTargets) {
+    if (!(await exists(path.join(dir, importedFile)))) {
+      throw new Error(
+        `${browserName}: missing module dependency referenced by extension bundle: ${importedFile}`,
+      );
+    }
+  }
+
+  const legacyIifePrefixes = [
+    "var VOT = (function",
+    "var VOT = (() =>",
+    "(function () {",
+    "(() => {",
+  ];
+  for (const [fileName, source] of [
+    ["prelude.module.js", preludeModule],
+    ["content.module.js", contentModule],
+  ] as const) {
+    const normalizedSource = source.trimStart();
+    if (
+      legacyIifePrefixes.some((prefix) => normalizedSource.startsWith(prefix))
+    ) {
+      throw new Error(
+        `${browserName}: expected ${fileName} to avoid legacy IIFE wrapping`,
+      );
+    }
+  }
+}
+
+async function verifyBodySerializationGuards(
+  browserName: "chrome" | "firefox",
+): Promise<void> {
   const bridgeSrcPath = path.join(rootDir, "src/extension/bridge.ts");
-  const serializationSrcPath = path.join(rootDir, "src/extension/bodySerialization.ts");
+  const bridgeXhrSrcPath = path.join(rootDir, "src/extension/bridgeXhr.ts");
+  const serializationSrcPath = path.join(
+    rootDir,
+    "src/extension/bodySerialization.ts",
+  );
   let sourceToCheck: string | null = null;
   if (await exists(serializationSrcPath)) {
     sourceToCheck = await fs.readFile(serializationSrcPath, "utf8");
@@ -764,14 +1059,33 @@ async function verifyOne(browserName: "chrome" | "firefox"): Promise<void> {
     );
   }
 
-  if (await exists(bridgeSrcPath)) {
-    const bridgeSource = await fs.readFile(bridgeSrcPath, "utf8");
-    if (!/await\s+serializeBodyForPort\(/.test(bridgeSource)) {
-      throw new Error(
-        `${browserName}: regression guard failed: src/extension/bridge.ts must await serializeBodyForPort(...)`,
-      );
+  const bridgeSerializationSourcePaths = [bridgeXhrSrcPath, bridgeSrcPath];
+  for (const sourcePath of bridgeSerializationSourcePaths) {
+    if (!(await exists(sourcePath))) {
+      continue;
+    }
+
+    const source = await fs.readFile(sourcePath, "utf8");
+    if (/await\s+serializeBodyForPort\(/.test(source)) {
+      return;
     }
   }
+
+  throw new Error(
+    `${browserName}: regression guard failed: expected bridge XHR flow to await serializeBodyForPort(...)`,
+  );
+}
+
+async function verifyOne(browserName: "chrome" | "firefox"): Promise<void> {
+  const dir = path.join(outBase, browserName);
+  const manifestPath = path.join(dir, "manifest.json");
+  const manifest = await readVerifiedManifest(browserName, manifestPath);
+  verifyManifestPermissions(browserName, manifest);
+  verifyBrowserSpecificManifestFields(browserName, manifest);
+  verifyContentScripts(browserName, manifest);
+  await verifyRequiredOutputFiles(browserName, dir);
+  await verifyBundleSources(browserName, dir);
+  await verifyBodySerializationGuards(browserName);
 
   console.log(`OK ${browserName}: basic structure checks passed`);
 }
@@ -797,6 +1111,61 @@ export async function verifyExtensionOutputs(
   console.log("\nExtension verification complete.");
 }
 
+interface BrowserBuildResult {
+  outDir: string;
+  packagePath: string;
+  removedPackages: string[];
+  updatesPath?: string;
+}
+
+async function buildBrowserArtifacts({
+  browserDir,
+  artifactPrefix,
+  fileExtension,
+  backgroundSrc,
+  headers,
+  version,
+  includeWorld,
+  buildManifest,
+  afterPackage,
+}: {
+  browserDir: "chrome" | "firefox";
+  artifactPrefix: string;
+  fileExtension: ".zip" | ".xpi";
+  backgroundSrc: string;
+  headers: ExtensionHeaders;
+  version: string;
+  includeWorld: boolean;
+  buildManifest: (args: {
+    headers: ExtensionHeaders;
+    includeWorld: boolean;
+  }) => Record<string, unknown>;
+  afterPackage?: () => Promise<string>;
+}): Promise<BrowserBuildResult> {
+  const removedPackages = await cleanupOlderVersionedArtifacts({
+    artifactPrefix,
+    fileExtension,
+    currentVersion: version,
+  });
+
+  const outDir = path.join(outBase, browserDir);
+  await ensureCleanDir(outDir);
+  await copyExtensionFiles(outDir, {
+    backgroundSrc,
+    backgroundDst: "background.js",
+  });
+  await writeManifest(outDir, buildManifest({ headers, includeWorld }));
+
+  const packagePath = path.join(
+    outBase,
+    `${artifactPrefix}-${version}${fileExtension}`,
+  );
+  await zipDir(outDir, packagePath);
+
+  const updatesPath = afterPackage ? await afterPackage() : undefined;
+  return { outDir, packagePath, removedPackages, updatesPath };
+}
+
 export async function finalizeExtensionBuildArtifacts(
   target: ExtensionBuildTarget = "all",
 ): Promise<void> {
@@ -805,65 +1174,68 @@ export async function finalizeExtensionBuildArtifacts(
   const shouldBuildChrome = target === "all" || target === "chrome";
   const shouldBuildFirefox = target === "all" || target === "firefox";
 
-  await renameContentCss();
   if (shouldBuildChrome) {
-    await fs.rm(path.join(outBase, CHROME_UPDATES_MANIFEST_FILE), { force: true });
+    await fs.rm(path.join(outBase, CHROME_UPDATES_MANIFEST_FILE), {
+      force: true,
+    });
   }
 
-  const version = headers.version || "0.0.0";
-  let outChrome: string | null = null;
-  let chromeZip: string | null = null;
-  let outFirefox: string | null = null;
-  let firefoxXpi: string | null = null;
-  let firefoxUpdatesManifestPath: string | null = null;
+  const version = headers.version || DEFAULT_EXTENSION_VERSION;
+  let chromeBuild: BrowserBuildResult | null = null;
+  let firefoxBuild: BrowserBuildResult | null = null;
 
   if (shouldBuildChrome) {
-    outChrome = path.join(outBase, "chrome");
-    await ensureCleanDir(outChrome);
-    await copyExtensionFiles(outChrome, {
+    chromeBuild = await buildBrowserArtifacts({
+      browserDir: "chrome",
+      artifactPrefix: "vot-extension-chrome",
+      fileExtension: ".zip",
       backgroundSrc: "background.js",
-      backgroundDst: "background.js",
+      headers,
+      version,
+      includeWorld,
+      buildManifest: buildManifestChrome,
     });
-    await writeManifest(
-      outChrome,
-      buildManifestChrome({ headers, includeWorld }),
-    );
-
-    chromeZip = path.join(outBase, `vot-extension-chrome-${version}.zip`);
-    await zipDir(outChrome, chromeZip);
   }
 
   if (shouldBuildFirefox) {
-    outFirefox = path.join(outBase, "firefox");
-    await ensureCleanDir(outFirefox);
-    await copyExtensionFiles(outFirefox, {
+    firefoxBuild = await buildBrowserArtifacts({
+      browserDir: "firefox",
+      artifactPrefix: "vot-extension-firefox",
+      fileExtension: ".xpi",
       backgroundSrc: "background-ff.js",
-      backgroundDst: "background.js",
-    });
-    await writeManifest(
-      outFirefox,
-      buildManifestFirefox({ headers, includeWorld }),
-    );
-
-    firefoxXpi = path.join(outBase, `vot-extension-firefox-${version}.xpi`);
-    await zipDir(outFirefox, firefoxXpi);
-    firefoxUpdatesManifestPath = await writeFirefoxUpdatesManifest({
+      headers,
       version,
-      addonId: getFirefoxAddonId(),
+      includeWorld,
+      buildManifest: buildManifestFirefox,
+      afterPackage: async () =>
+        writeFirefoxUpdatesManifest({
+          version,
+          addonId: getFirefoxAddonId(),
+        }),
     });
   }
 
   await verifyExtensionOutputs(target);
 
   console.log("Extension build complete:");
-  if (outChrome) {
-    console.log(`- Chrome:  ${outChrome}`);
-    console.log(`  - Package: ${chromeZip}`);
+  if (chromeBuild) {
+    console.log(`- Chrome:  ${chromeBuild.outDir}`);
+    console.log(`  - Package: ${chromeBuild.packagePath}`);
+    if (chromeBuild.removedPackages.length) {
+      console.log(
+        `  - Removed old packages: ${chromeBuild.removedPackages.join(", ")}`,
+      );
+    }
   }
-  if (outFirefox) {
-    console.log(`- Firefox: ${outFirefox}`);
-    console.log(`  - Package: ${firefoxXpi}`);
-    console.log(`  - Updates: ${firefoxUpdatesManifestPath}`);
+  if (firefoxBuild) {
+    console.log(`- Firefox: ${firefoxBuild.outDir}`);
+    console.log(`  - Package: ${firefoxBuild.packagePath}`);
+    console.log(`  - Updates: ${firefoxBuild.updatesPath}`);
+    if (firefoxBuild.removedPackages.length) {
+      console.log(
+        `  - Removed old packages: ${firefoxBuild.removedPackages.join(", ")}`,
+      );
+    }
   }
 }
 

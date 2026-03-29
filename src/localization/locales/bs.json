@@ -241,5 +241,8 @@
   "VOTLoginViaToken": "Prijava putem tokena",
   "subtitlesSmartLayout": "Smart izgled titlova",
   "smartDucking": "Adaptivni volumen",
-  "VOTAutoSubtitles": "Subtitles on open"
+  "VOTAutoSubtitles": "Subtitles on open",
+  "VOTSubtitlesFont": "Font za titlove",
+  "VOTDefaultSubtitlesLanguage": "Uobičajeni jezik titlova",
+  "VOTOriginalVideoLanguage": "Originalni video jezik"
 }

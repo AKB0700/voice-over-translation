@@ -241,5 +241,8 @@
   "VOTLoginViaToken": "Inloggen via token",
   "subtitlesSmartLayout": "Smart subtitle layout",
   "smartDucking": "Adaptief volume",
-  "VOTAutoSubtitles": "Ondertitels op open"
+  "VOTAutoSubtitles": "Ondertitels op open",
+  "VOTSubtitlesFont": "Ondertiteling lettertype",
+  "VOTDefaultSubtitlesLanguage": "Standaard ondertiteltaal",
+  "VOTOriginalVideoLanguage": "Originele videotaal"
 }

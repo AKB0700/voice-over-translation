@@ -1,5 +1,5 @@
 import { contentUrl } from "../config/config";
-import type { FlatPhrases, Locale, Phrase } from "../types/localization";
+import type { FlatPhrases, LangOverride, Phrase } from "../types/localization";
 import type { LocaleStorageKey } from "../types/storage";
 import debug from "../utils/debug";
 import { GM_fetch } from "../utils/gm";
@@ -8,17 +8,17 @@ import { votStorage } from "../utils/storage";
 import { getTimestamp, toFlatObj } from "../utils/utils";
 import rawDefaultLocale from "./locales/en.json";
 
-export type LangOverride = "auto" | Locale;
+export type { LangOverride } from "../types/localization";
 
 const LOCALE_STORAGE_KEYS: readonly LocaleStorageKey[] = [
   "localePhrases",
   "localeLang",
   "localeHash",
+  "localeVersion",
   "localeUpdatedAt",
   "localeLangOverride",
 ];
 const DEFAULT_LOCALE: FlatPhrases = toFlatObj(rawDefaultLocale);
-const CACHE_TTL_SECONDS = 7200;
 
 const repoBranch =
   typeof REPO_BRANCH !== "undefined" && REPO_BRANCH ? REPO_BRANCH : "master";
@@ -36,6 +36,24 @@ const availableLocales: readonly LangOverride[] = (() => {
     : (["auto", ...locales] as LangOverride[]);
 })();
 
+export function resolveRuntimeLocaleVersion(
+  buildVersion: string,
+  scriptVersion: string,
+) {
+  return buildVersion || scriptVersion || "unknown";
+}
+
+function getRuntimeLocaleVersion() {
+  const buildVersion =
+    typeof VOT_VERSION !== "undefined" ? String(VOT_VERSION || "") : "";
+  const scriptVersion =
+    typeof GM_info !== "undefined"
+      ? String(GM_info?.script?.version || "")
+      : "";
+
+  return resolveRuntimeLocaleVersion(buildVersion, scriptVersion);
+}
+
 class LocalizationProvider {
   /**
    * Language used before page was reloaded
@@ -46,8 +64,6 @@ class LocalizationProvider {
    */
   locale: Partial<FlatPhrases>;
   readonly defaultLocale: FlatPhrases = DEFAULT_LOCALE;
-
-  readonly cacheTTL = CACHE_TTL_SECONDS;
   readonly localesUrl = `${contentUrl}/${repoBranch}/src/localization/locales`;
   readonly hashesUrl =
     `${contentUrl}/${repoBranch}/src/localization/hashes.json`;
@@ -134,19 +150,11 @@ class LocalizationProvider {
   }
 
   async update(force = false) {
-    const timestamp = getTimestamp();
-    if (!force) {
-      const [localeUpdatedAt, localeLang] = await Promise.all([
-        votStorage.get<number>("localeUpdatedAt", 0),
-        votStorage.get<string>("localeLang", ""),
-      ]);
-      if (
-        localeUpdatedAt + this.cacheTTL > timestamp &&
-        localeLang === this.lang
-      ) {
-        return this;
-      }
-    }
+    const runtimeLocaleVersion = getRuntimeLocaleVersion();
+    const storedLocaleVersion = await votStorage.get<string>(
+      "localeVersion",
+      "",
+    );
 
     const hash = await this.checkUpdates(force);
     if (hash === null) {
@@ -156,10 +164,13 @@ class LocalizationProvider {
     }
 
     if (!hash) {
-      await votStorage.set("localeUpdatedAt", timestamp);
+      if (storedLocaleVersion !== runtimeLocaleVersion) {
+        await votStorage.set("localeVersion", runtimeLocaleVersion);
+      }
       return this;
     }
 
+    const timestamp = getTimestamp();
     debug.log("Updating locale...");
     try {
       const res = await GM_fetch(
@@ -174,6 +185,7 @@ class LocalizationProvider {
         votStorage.set("localePhrases", text),
         votStorage.set("localeHash", hash),
         votStorage.set("localeLang", this.lang),
+        votStorage.set("localeVersion", runtimeLocaleVersion),
         votStorage.set("localeUpdatedAt", timestamp),
       ]);
     } catch (err) {
@@ -260,8 +272,9 @@ class LocalizationProvider {
 export const localizationProvider = new LocalizationProvider();
 /**
  * In the userscript build, SystemJS wrapping allowed a top-level await.
- * For the extension build we emit classic scripts (IIFE), so we must avoid
- * top-level await and instead expose an explicit lazy ready Promise.
+ * For the extension build we bootstrap through loader scripts and keep the
+ * runtime initialization explicit, so avoid top-level await and expose a lazy
+ * ready Promise instead.
  */
 let localizationProviderReadyPromise: Promise<LocalizationProvider> | null =
   null;

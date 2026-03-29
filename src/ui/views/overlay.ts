@@ -25,6 +25,7 @@ import Tooltip from "../components/tooltip";
 import VOTButton from "../components/votButton";
 import VOTMenu from "../components/votMenu";
 import { SETTINGS_ICON, SUBTITLES_ICON } from "./../icons";
+import { didTooltipMountContextChange } from "../mount";
 
 export class OverlayView {
   private static readonly BIG_CONTAINER_WIDTH_PX = 550;
@@ -32,7 +33,7 @@ export class OverlayView {
   mount: OverlayMount;
   globalPortal: HTMLElement;
   private abortController: AbortController | null = null;
-  private defaultVolumePersistTimer: number | undefined;
+  private defaultVolumePersistTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly defaultVolumePersistDelayMs = 250;
 
   private dragging = false;
@@ -41,6 +42,7 @@ export class OverlayView {
   private dragStartX = 0;
   private dragStartY = 0;
   private currentClientX = 0;
+  private activePointerId: number | null = null;
   private readonly dragThresholdPx = 6;
   private containerRect: DOMRect | null = null;
   private dragIsBigContainer: boolean | null = null;
@@ -80,8 +82,6 @@ export class OverlayView {
     >(),
   };
 
-  // shared
-  votOverlayPortal?: HTMLElement;
   // button
   votButton?: VOTButton;
   votButtonTooltip?: Tooltip;
@@ -125,14 +125,12 @@ export class OverlayView {
   }
 
   /**
-   * Update mount points (root/portal/tooltipLayoutRoot) when the player container changes.
+   * Update mount points (root/tooltipLayoutRoot) when the player container changes.
    * Moves already-mounted UI nodes and rebinds root-bound listeners (dragging).
    */
   updateMount(nextMount: OverlayMount): this {
     const prevRoot = this.mount.root;
     const nextRoot = nextMount.root;
-    const prevPortal = this.mount.portalContainer;
-    const nextPortal = nextMount.portalContainer;
     const prevTooltipRoot = this.mount.tooltipLayoutRoot;
     const nextTooltipRoot = nextMount.tooltipLayoutRoot;
 
@@ -143,10 +141,6 @@ export class OverlayView {
     }
 
     // Move mounted nodes to new containers.
-    if (this.votOverlayPortal && prevPortal !== nextPortal) {
-      nextPortal.appendChild(this.votOverlayPortal);
-    }
-
     if (prevRoot !== nextRoot) {
       if (this.votButton) {
         nextRoot.appendChild(this.votButton.container);
@@ -156,8 +150,21 @@ export class OverlayView {
       }
     }
 
-    // Tooltip layout may depend on a different root when container changes.
-    if (this.votButtonTooltip && prevTooltipRoot !== nextTooltipRoot) {
+    // Tooltip geometry depends on both the layout root and the overlay root:
+    // some fullscreen transitions only reparent the button/root while keeping
+    // the same tooltipLayoutRoot, so force a refresh for either change.
+    if (
+      this.votButtonTooltip &&
+      didTooltipMountContextChange(
+        {
+          root: prevRoot,
+          portalContainer: this.mount.portalContainer,
+          subtitlesMountContainer: this.mount.subtitlesMountContainer,
+          tooltipLayoutRoot: prevTooltipRoot,
+        },
+        nextMount,
+      )
+    ) {
       // If tooltipLayoutRoot becomes undefined, fall back to documentElement.
       this.votButtonTooltip.updateMount({
         layoutRoot: nextTooltipRoot ?? document.documentElement,
@@ -168,9 +175,6 @@ export class OverlayView {
   }
 
   isInitialized(): this is {
-    // #region Shared type
-    votOverlayPortal: HTMLElement;
-    // #endregion Shared type
     // #region Button type
     votButton: VOTButton;
     votButtonTooltip: Tooltip;
@@ -256,9 +260,6 @@ export class OverlayView {
     // #region Shared logic
     const { position, direction } = this.calcButtonLayout(buttonPosition);
 
-    this.votOverlayPortal = ui.createPortal(true);
-    this.portalContainer.appendChild(this.votOverlayPortal);
-
     // #endregion Shared logic
     // #region VOT Button
     this.votButton = new VOTButton({
@@ -281,7 +282,7 @@ export class OverlayView {
       autoLayout: false,
       hidden: direction === "row",
       bordered: false,
-      parentElement: this.votOverlayPortal,
+      parentElement: this.globalPortal,
       layoutRoot: this.tooltipLayoutRoot,
     });
 
@@ -339,6 +340,7 @@ export class OverlayView {
         ),
         items: Select.genLanguageItems(availableTTS, responseLanguage),
       },
+      dialogParent: this.globalPortal,
     });
 
     this.subtitlesSelectLabel = new Label({
@@ -382,7 +384,8 @@ export class OverlayView {
     this.translationVolumeSlider = new Slider({
       labelHtml: this.translationVolumeSliderLabel.container,
       value: defaultVolume,
-      max: this.data.audioBooster ? maxAudioVolume : 100,
+      max:
+        this.data.audioBooster && !this.data.syncVolume ? maxAudioVolume : 100,
     });
     this.translationVolumeSlider.hidden = this.votButton.status !== "success";
 
@@ -515,11 +518,8 @@ export class OverlayView {
     );
 
     // #region [Events] VOT Button Dragging
-    // Enable cross-platform dragging:
-    // - Pointer Events on desktop/pen
-    // - Touch Events fallback on mobile
-    // Also set `touch-action: none` so browsers don't treat the gesture as a
-    // scroll/pinch action.
+    // Pointer capture keeps drag updates routed to the button even when the
+    // pointer leaves the overlay bounds.
     const touchAction = "none";
     this.votButton.container.style.touchAction = touchAction;
     // `touch-action` is not inherited, so ensure child segments are also covered.
@@ -531,9 +531,22 @@ export class OverlayView {
       signal,
     });
     this.votButton.container.addEventListener(
-      "touchstart",
-      this.onTouchDragStart,
-      { signal, passive: false },
+      "pointermove",
+      this.onPointerMove,
+      {
+        signal,
+      },
+    );
+    this.votButton.container.addEventListener("pointerup", this.onDragEnd, {
+      signal,
+    });
+    this.votButton.container.addEventListener("pointercancel", this.onDragEnd, {
+      signal,
+    });
+    this.votButton.container.addEventListener(
+      "lostpointercapture",
+      this.onDragEnd,
+      { signal },
     );
 
     // #endregion [Events] VOT Button Dragging
@@ -714,12 +727,25 @@ export class OverlayView {
         return;
       }
 
-      const cacheKey = this.videoHandler.getSubtitlesCacheKey(
-        this.videoHandler.videoData.videoId,
+      const subtitleLanguage = this.videoHandler.getPreferredSubtitlesLanguage(
         this.videoHandler.videoData.detectedLanguage,
         this.videoHandler.videoData.responseLanguage,
       );
-      if (this.videoHandler.cacheManager.getSubtitles(cacheKey)) {
+      if (!subtitleLanguage) {
+        return;
+      }
+
+      const cacheKey = this.videoHandler.getSubtitlesCacheKey(
+        this.videoHandler.videoData.videoId,
+        this.videoHandler.videoData.detectedLanguage,
+        subtitleLanguage,
+      );
+      if (this.videoHandler.subtitlesCacheKey === cacheKey) {
+        return;
+      }
+
+      if (this.videoHandler.cacheManager.getSubtitles(cacheKey) !== undefined) {
+        await this.videoHandler.ensureSubtitlesForCurrentLangPair();
         return;
       }
 
@@ -731,7 +757,7 @@ export class OverlayView {
       loadingEl.style.margin = "0 auto";
       dialog.footerContainer.appendChild(loadingEl);
       try {
-        await this.videoHandler.loadSubtitles();
+        await this.videoHandler.ensureSubtitlesForCurrentLangPair();
       } finally {
         loadingEl.remove();
         if (this.votButton) {
@@ -866,58 +892,38 @@ export class OverlayView {
 
   onDragStart = (event: PointerEvent) => {
     // Only start drag on the primary pointer and the "primary" button.
-    // (For touch pointers, `button` is 0.)
     if (!event.isPrimary || event.button !== 0) return;
 
-    // On touch devices we prefer Touch Events for dragging (better compatibility
-    // with browser gesture handling and passive listener defaults).
-    if (event.pointerType === "touch") return;
-
     event.preventDefault();
+    this.activePointerId = event.pointerId;
 
     this.startDragSession(event.clientX, event.clientY, "overlay-pointer-down");
-
-    document.addEventListener("pointermove", this.onGlobalPointerMove, {
-      passive: true,
-    });
-    document.addEventListener("pointerup", this.onDragEnd);
-    document.addEventListener("pointercancel", this.onDragEnd);
   };
 
-  // Touch fallback for browsers/environments that don't deliver Pointer Events
-  // reliably on mobile. We only use the first active touch.
-  onTouchDragStart = (event: TouchEvent) => {
-    if (!event.touches || event.touches.length === 0) return;
-
-    const touch = event.touches[0];
-    this.startDragSession(touch.clientX, touch.clientY, "overlay-touch-start");
-
-    // Register non-passive move listener so we can call preventDefault()
-    // once we detect an actual drag.
-    document.addEventListener("touchmove", this.onGlobalTouchMove, {
-      passive: false,
-    });
-    document.addEventListener("touchend", this.onDragEnd);
-    document.addEventListener("touchcancel", this.onDragEnd);
-  };
-
-  onGlobalTouchMove = (event: TouchEvent) => {
-    if (!event.touches || event.touches.length === 0) return;
-    const t = event.touches[0];
-    this.updateDragFromMove(t.clientX, t.clientY, "overlay-touch-move");
-
-    // Only prevent page scrolling once we're sure the user is dragging.
-    if (this.dragging) {
-      event.preventDefault();
+  onPointerMove = (event: PointerEvent) => {
+    if (this.activePointerId !== event.pointerId) {
+      return;
     }
-  };
 
-  onGlobalPointerMove = (event: PointerEvent) => {
+    const wasDragging = this.dragging;
+
     this.updateDragFromMove(
       event.clientX,
       event.clientY,
       "overlay-pointer-move",
     );
+
+    if (!wasDragging && this.dragging) {
+      try {
+        this.votButton?.container.setPointerCapture(event.pointerId);
+      } catch {
+        // ignore; drag still works via regular pointer events
+      }
+    }
+
+    if (this.dragging) {
+      event.preventDefault();
+    }
   };
 
   private readonly applyDragFromState = () => {
@@ -940,14 +946,26 @@ export class OverlayView {
     this.applyDragFromState();
   };
 
-  onDragEnd = () => {
-    document.removeEventListener("pointermove", this.onGlobalPointerMove);
-    document.removeEventListener("pointerup", this.onDragEnd);
-    document.removeEventListener("pointercancel", this.onDragEnd);
+  onDragEnd = (event?: PointerEvent) => {
+    if (
+      event &&
+      this.activePointerId !== null &&
+      event.pointerId !== this.activePointerId
+    ) {
+      return;
+    }
 
-    document.removeEventListener("touchmove", this.onGlobalTouchMove);
-    document.removeEventListener("touchend", this.onDragEnd);
-    document.removeEventListener("touchcancel", this.onDragEnd);
+    const pointerId = this.activePointerId;
+    if (pointerId !== null) {
+      try {
+        if (this.votButton?.container.hasPointerCapture(pointerId)) {
+          this.votButton.container.releasePointerCapture(pointerId);
+        }
+      } catch {
+        // ignore
+      }
+    }
+
     this.applyDragFromState();
 
     const isBigContainer = this.dragIsBigContainer ?? this.isBigContainer;
@@ -960,6 +978,7 @@ export class OverlayView {
     this.dragDirty = false;
     this.containerRect = null;
     this.dragIsBigContainer = null;
+    this.activePointerId = null;
   };
 
   updateButtonOpacity(opacity: number) {
@@ -978,7 +997,6 @@ export class OverlayView {
     this.votButton?.remove();
     this.votMenu?.remove();
     this.votButtonTooltip?.release();
-    this.votOverlayPortal?.remove();
   }
 
   private doReleaseUIEvents(): void {
@@ -993,28 +1011,6 @@ export class OverlayView {
     for (const event of Object.values(this.events)) {
       event.clear();
     }
-  }
-
-  releaseUI(initialized = false) {
-    if (!this.isInitialized()) {
-      throw new Error("[VOT] OverlayView isn't initialized");
-    }
-
-    this.doReleaseUI();
-
-    this.initialized = initialized;
-    return this;
-  }
-
-  releaseUIEvents(initialized = false) {
-    if (!this.isInitialized()) {
-      throw new Error("[VOT] OverlayView isn't initialized");
-    }
-
-    this.doReleaseUIEvents();
-
-    this.initialized = initialized;
-    return this;
   }
 
   release() {
